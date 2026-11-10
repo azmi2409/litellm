@@ -204,6 +204,101 @@ def test_decisions_on_a_mixed_group_never_routes_to_a_leg_without_decisions_supp
     assert route.call_count == 20
 
 
+_DECISIONS_ONLY_CHAT_LEG: Final = {
+    "model_name": "d3-lite",
+    "litellm_params": {
+        "model": "hosted_vllm/d3-lite",
+        "api_base": "http://ai-guard:5004/v1",
+    },
+    "model_info": {"id": "d3-lite-ai-guard", "mode": "decisions", "discoverable": False},
+}
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_on_a_decisions_only_deployment_fails_fast_without_an_upstream_call(
+    respx_mock: respx.MockRouter,
+    _router_httpx_transport: None,
+) -> None:
+    router: Final = Router(model_list=[_DECISIONS_ONLY_CHAT_LEG])
+    upstream: Final = respx_mock.post("http://ai-guard:5004/v1/chat/completions").respond(
+        status_code=404, json={"detail": "Not Found"}
+    )
+
+    with pytest.raises(litellm.BadRequestError, match="decisions-only model") as excinfo:
+        await router.acompletion(
+            model="d3-lite",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=8,
+        )
+
+    assert excinfo.value.status_code == 400
+    assert upstream.called is False
+
+
+def test_chat_completions_on_a_decisions_only_deployment_fails_fast_without_an_upstream_call_sync(
+    respx_mock: respx.MockRouter,
+    _router_httpx_transport: None,
+) -> None:
+    router: Final = Router(model_list=[_DECISIONS_ONLY_CHAT_LEG])
+    upstream: Final = respx_mock.post("http://ai-guard:5004/v1/chat/completions").respond(
+        status_code=404, json={"detail": "Not Found"}
+    )
+
+    with pytest.raises(litellm.BadRequestError, match="decisions-only model") as excinfo:
+        router.completion(
+            model="d3-lite",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=8,
+        )
+
+    assert excinfo.value.status_code == 400
+    assert upstream.called is False
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_on_a_chat_deployment_still_reaches_upstream(
+    respx_mock: respx.MockRouter,
+    _router_httpx_transport: None,
+) -> None:
+    router: Final = Router(
+        model_list=[
+            {
+                "model_name": "d3-lite",
+                "litellm_params": {
+                    "model": "hosted_vllm/d3-lite",
+                    "api_base": "http://ai-guard:5004/v1",
+                },
+                "model_info": {"id": "d3-lite-ai-guard"},
+            }
+        ]
+    )
+    upstream: Final = respx_mock.post("http://ai-guard:5004/v1/chat/completions").respond(
+        json={
+            "id": "chatcmpl-x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "d3-lite",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+    )
+
+    response = await router.acompletion(
+        model="d3-lite",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+    )
+
+    assert upstream.called is True
+    assert response.choices[0].message.content == "hi"
+
+
 @pytest.mark.asyncio
 async def test_decisions_on_a_group_with_no_capable_leg_still_returns_the_provider_error() -> None:
     router: Final = Router(

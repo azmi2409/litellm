@@ -5870,6 +5870,16 @@ def completion(
         deployment_model_info: Final = str_keyed_mapping(
             cast(object, model_info)  # cast-ok: model_info is the untyped dict kwarg
         )
+        deployment_mode: Final = deployment_model_info.get("mode") if deployment_model_info is not None else None
+        if isinstance(deployment_mode, str) and is_decisions_model_mode(deployment_mode):
+            raise litellm.BadRequestError(
+                message=(
+                    f"Model '{requested_model}' is a decisions-only model and does not serve chat completions. "
+                    "Use /v1/systemone for this model instead."
+                ),
+                model=requested_model,
+                llm_provider=custom_llm_provider,
+            )
         ## RESPONSES API BRIDGE LOGIC ## - check early and normalize model name
         responses_api_model_info, model = responses_api_bridge_check(
             model=model,
