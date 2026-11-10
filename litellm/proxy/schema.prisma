@@ -676,6 +676,7 @@ model LiteLLM_EndUserTable {
   default_model String? // use along with 'allowed_model_region'. if no available model in region, default to this model.
   models String[] @default([])
   budget_id String?
+  budget_reset_at DateTime? // window the row's spend was last reset for
   object_permission_id String?
   litellm_budget_table LiteLLM_BudgetTable?   @relation(fields: [budget_id], references: [budget_id])
   object_permission LiteLLM_ObjectPermissionTable?   @relation(fields: [object_permission_id], references: [object_permission_id])

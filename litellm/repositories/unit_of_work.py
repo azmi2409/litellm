@@ -165,26 +165,49 @@ class TeamSpendResetWrites:
         )
 
 
+def _stamped_spend_where(where: Mapping[str, object], window: datetime | None) -> Mapping[str, object]:
+    """Guard a reset statement to rows not yet stamped for this window.
+
+    ``window`` is the tier's due ``budget_reset_at``: stable across retries of
+    the same window, so a row stamped by an earlier attempt no-ops while a row
+    never stamped (``budget_reset_at`` NULL) still resets. ``None`` keeps the
+    unguarded behavior for resets that commit with their window advance.
+    """
+    if window is None:
+        return where
+    return {**where, "OR": [{"budget_reset_at": {"lt": window}}, {"budget_reset_at": None}]}
+
+
+def _stamped_spend_data(data: Mapping[str, object], window: datetime | None) -> Mapping[str, object]:
+    if window is None:
+        return data
+    return {**data, "budget_reset_at": window}
+
+
 @runtime_checkable
 class SpendResetWrites(Protocol):
-    def queue_spend_zero(self, where: Mapping[str, object]) -> None: ...
+    def queue_spend_zero(self, where: Mapping[str, object], window: datetime | None = None) -> None: ...
 
-    def queue_spend_decrement(self, where: Mapping[str, object], amount: float) -> None: ...
+    def queue_spend_decrement(
+        self, where: Mapping[str, object], amount: float, window: datetime | None = None
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class LinkedSpendResetWrites:
     table: BatchTable
 
-    def queue_spend_zero(self, where: Mapping[str, object]) -> None:
-        self.table.update_many(where=where, data={"spend": 0})
+    def queue_spend_zero(self, where: Mapping[str, object], window: datetime | None = None) -> None:
+        self.table.update_many(
+            where=_stamped_spend_where(where, window), data=_stamped_spend_data({"spend": 0}, window)
+        )
 
-    def queue_spend_decrement(self, where: Mapping[str, object], amount: float) -> None:
+    def queue_spend_decrement(self, where: Mapping[str, object], amount: float, window: datetime | None = None) -> None:
         """``decrement`` rather than a read-then-set, so spend written between the
         cascade's read and its commit survives the reset instead of being erased."""
         self.table.update_many(
-            where=where,
-            data={"spend": {"decrement": amount}},
+            where=_stamped_spend_where(where, window),
+            data=_stamped_spend_data({"spend": {"decrement": amount}}, window),
         )
 
 
@@ -202,11 +225,11 @@ class TeamMembershipSpendResetWrites:
     resets: LinkedSpendResetWrites
     batch: PrismaBatch
 
-    def queue_spend_zero(self, where: Mapping[str, object]) -> None:
-        self.resets.queue_spend_zero(where)
+    def queue_spend_zero(self, where: Mapping[str, object], window: datetime | None = None) -> None:
+        self.resets.queue_spend_zero(where, window)
 
-    def queue_spend_decrement(self, where: Mapping[str, object], amount: float) -> None:
-        self.resets.queue_spend_decrement(where, amount)
+    def queue_spend_decrement(self, where: Mapping[str, object], amount: float, window: datetime | None = None) -> None:
+        self.resets.queue_spend_decrement(where, amount, window)
 
     def queue_total_spend_repair(self, budget_ids: Sequence[str]) -> None:
         self.batch.execute_raw(_TEAM_MEMBERSHIP_TOTAL_SPEND_REPAIR_SQL, list(budget_ids))

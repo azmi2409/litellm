@@ -296,6 +296,18 @@ def _batch_writes(mock_prisma_client, table: str, op: str | None = None) -> List
     ]
 
 
+def _stamped_where(where: dict[str, Any], window: datetime) -> dict[str, Any]:
+    """The where a window-stamped end-user reset queues: only rows not yet
+    stamped for this window."""
+    return {**where, "OR": [{"budget_reset_at": {"lt": window}}, {"budget_reset_at": None}]}
+
+
+def _stamped_data(data: dict[str, Any], window: datetime) -> dict[str, Any]:
+    """The data a window-stamped end-user reset writes: the spend change plus
+    the window stamp."""
+    return {**data, "budget_reset_at": window}
+
+
 # Tests
 def test_write_key_reset_updates_skips_none_token_and_still_writes_the_rest(reset_budget_job, mock_prisma_client):
     """A key with token=None must be skipped, not queued as where={"token": None}.
@@ -492,8 +504,8 @@ def test_reset_budget_for_enduser(reset_budget_job, mock_prisma_client):
         {
             "table": "enduser",
             "op": "update_many",
-            "where": {"user_id": {"in": ["test-enduser-1"]}, "spend": {"gt": 0}},
-            "data": {"spend": 0},
+            "where": _stamped_where({"user_id": {"in": ["test-enduser-1"]}, "spend": {"gt": 0}}, now),
+            "data": _stamped_data({"spend": 0}, now),
         }
     ]
     assert [batcher.committed for batcher in mock_prisma_client.db.batchers] == [True, True]
@@ -513,7 +525,8 @@ def test_enduser_reset_commits_in_pages_before_the_window_advances(reset_budget_
     once the table holds millions of rows, so the batch rolls back and
     budget_reset_at never moves. The reset has to land one committed page at a
     time, keyed by user id, with the window advance after the last page."""
-    mock_prisma_client.data["budget"] = [_budget_row(budget_id="shared-tier", budget_duration="1d")]
+    budget = _budget_row(budget_id="shared-tier", budget_duration="1d")
+    mock_prisma_client.data["budget"] = [budget]
     population: Final = RESET_BUDGET_JOB_BATCH_SIZE * 2 + 3
     mock_prisma_client.db.litellm_endusertable.set_find_many_results(
         [
@@ -534,7 +547,10 @@ def test_enduser_reset_commits_in_pages_before_the_window_advances(reset_budget_
         3,
     ]
     assert [page.calls[0]["where"]["spend"] for page in pages] == [{"gt": 0}] * 3
-    assert [page.calls[0]["data"] for page in pages] == [{"spend": 0}] * 3
+    assert [page.calls[0]["where"]["OR"] for page in pages] == [
+        [{"budget_reset_at": {"lt": budget.budget_reset_at}}, {"budget_reset_at": None}]
+    ] * 3
+    assert [page.calls[0]["data"] for page in pages] == [_stamped_data({"spend": 0}, budget.budget_reset_at)] * 3
     assert pages[0].calls[0]["where"]["user_id"]["in"][0] == "cust-000000"
     assert pages[2].calls[0]["where"]["user_id"]["in"] == ["cust-001000", "cust-001001", "cust-001002"]
     cascade: Final = batchers[3]
@@ -571,10 +587,9 @@ def test_enduser_page_keeps_each_tier_s_rollover_statements_to_its_own_users(
     zero-then-decrement pair must name only that tier's user ids and its own
     cap, or a 15.0 spend on a 20.0 tier would be carried as 5.0."""
     _make_counter_invalidation_job(monkeypatch)
-    mock_prisma_client.data["budget"] = [
-        _budget_row(budget_id="tier-10", budget_duration="1d", max_budget=10.0),
-        _budget_row(budget_id="tier-20", budget_duration="1d", max_budget=20.0),
-    ]
+    tier_10 = _budget_row(budget_id="tier-10", budget_duration="1d", max_budget=10.0)
+    tier_20 = _budget_row(budget_id="tier-20", budget_duration="1d", max_budget=20.0)
+    mock_prisma_client.data["budget"] = [tier_10, tier_20]
     mock_prisma_client.db.litellm_endusertable.set_find_many_results(
         [
             types.SimpleNamespace(spend=15.0, user_id="cust-a", budget_id="tier-10"),
@@ -589,26 +604,34 @@ def test_enduser_page_keeps_each_tier_s_rollover_statements_to_its_own_users(
         {
             "table": "enduser",
             "op": "update_many",
-            "where": {"user_id": {"in": ["cust-a", "cust-c"]}, "spend": {"gt": 0, "lte": 10.0}},
-            "data": {"spend": 0},
+            "where": _stamped_where(
+                {"user_id": {"in": ["cust-a", "cust-c"]}, "spend": {"gt": 0, "lte": 10.0}}, tier_10.budget_reset_at
+            ),
+            "data": _stamped_data({"spend": 0}, tier_10.budget_reset_at),
         },
         {
             "table": "enduser",
             "op": "update_many",
-            "where": {"user_id": {"in": ["cust-a", "cust-c"]}, "spend": {"gt": 10.0}},
-            "data": {"spend": {"decrement": 10.0}},
+            "where": _stamped_where(
+                {"user_id": {"in": ["cust-a", "cust-c"]}, "spend": {"gt": 10.0}}, tier_10.budget_reset_at
+            ),
+            "data": _stamped_data({"spend": {"decrement": 10.0}}, tier_10.budget_reset_at),
         },
         {
             "table": "enduser",
             "op": "update_many",
-            "where": {"user_id": {"in": ["cust-b"]}, "spend": {"gt": 0, "lte": 20.0}},
-            "data": {"spend": 0},
+            "where": _stamped_where(
+                {"user_id": {"in": ["cust-b"]}, "spend": {"gt": 0, "lte": 20.0}}, tier_20.budget_reset_at
+            ),
+            "data": _stamped_data({"spend": 0}, tier_20.budget_reset_at),
         },
         {
             "table": "enduser",
             "op": "update_many",
-            "where": {"user_id": {"in": ["cust-b"]}, "spend": {"gt": 20.0}},
-            "data": {"spend": {"decrement": 20.0}},
+            "where": _stamped_where(
+                {"user_id": {"in": ["cust-b"]}, "spend": {"gt": 20.0}}, tier_20.budget_reset_at
+            ),
+            "data": _stamped_data({"spend": {"decrement": 20.0}}, tier_20.budget_reset_at),
         },
     ]
 
@@ -707,8 +730,8 @@ def test_reset_budget_all(reset_budget_job, mock_prisma_client):
         {
             "table": "enduser",
             "op": "update_many",
-            "where": {"user_id": {"in": ["test-enduser-1"]}, "spend": {"gt": 0}},
-            "data": {"spend": 0},
+            "where": _stamped_where({"user_id": {"in": ["test-enduser-1"]}, "spend": {"gt": 0}}, now),
+            "data": _stamped_data({"spend": 0}, now),
         }
     ]
     assert len(_batch_writes(mock_prisma_client, "budget")) == 1
@@ -775,7 +798,9 @@ def test_enduser_reset_bind_count_does_not_scale_with_population(reset_budget_jo
     one statement read and update the whole end-user table, which past a few
     million rows outlives the prisma client's 30s request timeout. Paging by
     user id keeps every statement at one page of binds however many end users
-    share a tier, and the statements have to cover the whole population.
+    share a tier, and the statements have to cover the whole population. The
+    window stamp adds one constant bind per statement, so the bound is the
+    page plus the spend predicate plus the stamp predicate.
     """
     budget = _budget_row(budget_id="shared-tier", budget_duration="1d")
     mock_prisma_client.data["budget"] = [budget]
@@ -789,8 +814,8 @@ def test_enduser_reset_bind_count_does_not_scale_with_population(reset_budget_jo
     asyncio.run(reset_budget_job.reset_budget_for_litellm_budget_table())
 
     writes = _batch_writes(mock_prisma_client, "enduser")
-    assert max(_bind_count(write["where"]) for write in writes) <= RESET_BUDGET_JOB_BATCH_SIZE + 1
-    assert RESET_BUDGET_JOB_BATCH_SIZE + 1 < _POSTGRES_MAX_BIND_VARIABLES
+    assert max(_bind_count(write["where"]) for write in writes) <= RESET_BUDGET_JOB_BATCH_SIZE + 2
+    assert RESET_BUDGET_JOB_BATCH_SIZE + 2 < _POSTGRES_MAX_BIND_VARIABLES
     assert sorted(user_id for write in writes for user_id in write["where"]["user_id"]["in"]) == [
         f"cust-{index:08d}" for index in range(population)
     ]
@@ -969,8 +994,11 @@ def test_reset_budget_resets_endusers_with_null_budget_id(reset_budget_job, mock
         {
             "table": "enduser",
             "op": "update_many",
-            "where": {"user_id": {"in": ["enduser-explicit", "enduser-implicit"]}, "spend": {"gt": 0}},
-            "data": {"spend": 0},
+            "where": _stamped_where(
+                {"user_id": {"in": ["enduser-explicit", "enduser-implicit"]}, "spend": {"gt": 0}},
+                test_budget.budget_reset_at,
+            ),
+            "data": _stamped_data({"spend": 0}, test_budget.budget_reset_at),
         },
     ]
 
@@ -2071,6 +2099,30 @@ class FailingCommitDB(MockDB):
             raise RuntimeError("simulated Postgres timeout mid-cascade")
 
         batcher.commit = _fail
+        return batcher
+
+
+class SwitchableCascadeFailureDB(MockDB):
+    """Fails every batch that advances a budget window, until switched off.
+
+    End-user pages commit on their own ahead of the cascade, so one tick with
+    the flag on leaves the pages committed and the tier due, and the next tick
+    with it off replays the same end users against a healthy cascade."""
+
+    def __init__(self):
+        super().__init__()
+        self.fail_cascade = True
+
+    def batch_(self):
+        batcher = super().batch_()
+        record_and_commit = batcher.commit
+
+        async def _maybe_fail():
+            if self.fail_cascade and any(call["table"] == "budget" for call in batcher.calls):
+                raise RuntimeError("simulated Postgres timeout mid-cascade")
+            return await record_and_commit()
+
+        batcher.commit = _maybe_fail
         return batcher
 
 
@@ -3494,14 +3546,18 @@ def test_budget_cascade_carries_enduser_overage_when_rollover_enabled(
     assert {
         "table": "enduser",
         "op": "update_many",
-        "where": {"user_id": {"in": ["enduser-roll"]}, "spend": {"gt": 10.0}},
-        "data": {"spend": {"decrement": 10.0}},
+        "where": _stamped_where(
+            {"user_id": {"in": ["enduser-roll"]}, "spend": {"gt": 10.0}}, budget.budget_reset_at
+        ),
+        "data": _stamped_data({"spend": {"decrement": 10.0}}, budget.budget_reset_at),
     } in enduser_writes
     assert {
         "table": "enduser",
         "op": "update_many",
-        "where": {"user_id": {"in": ["enduser-roll"]}, "spend": {"gt": 0, "lte": 10.0}},
-        "data": {"spend": 0},
+        "where": _stamped_where(
+            {"user_id": {"in": ["enduser-roll"]}, "spend": {"gt": 0, "lte": 10.0}}, budget.budget_reset_at
+        ),
+        "data": _stamped_data({"spend": 0}, budget.budget_reset_at),
     } in enduser_writes
 
 
@@ -3551,6 +3607,27 @@ def _replay_spend_writes(writes, spend):
     return spend
 
 
+def _replay_stamped_spend_writes(writes, spend, stamp):
+    """Apply the queued end-user update_many statements in order, the way the
+    DB executes them, honouring the window stamp: a statement only touches a
+    row not yet stamped for its window. Returns the row's (spend, stamp)."""
+    for write in writes:
+        window = write["data"].get("budget_reset_at")
+        if window is not None and stamp is not None and not stamp < window:
+            continue
+        condition = write["where"].get("spend")
+        if isinstance(condition, dict):
+            if "gt" in condition and not spend > condition["gt"]:
+                continue
+            if "lte" in condition and not spend <= condition["lte"]:
+                continue
+        payload = write["data"]["spend"]
+        spend = payload if not isinstance(payload, dict) else spend - payload["decrement"]
+        if window is not None:
+            stamp = window
+    return spend, stamp
+
+
 @pytest.mark.parametrize("table", ["team_membership", "enduser"])
 def test_cascade_rollover_writes_survive_sequential_execution(
     rollover_enabled, reset_budget_job, mock_prisma_client, monkeypatch, table
@@ -3578,6 +3655,56 @@ def test_cascade_rollover_writes_survive_sequential_execution(
     assert _replay_spend_writes(writes, 15.0) == 5.0
     assert _replay_spend_writes(writes, 8.0) == 0
     assert _replay_spend_writes(writes, 25.0) == 15.0
+
+
+def test_retried_budget_reset_keeps_rollover_carryover(rollover_enabled, monkeypatch):
+    """Regression for #50898.
+
+    End-user spend commits one page at a time before the budget cascade, so a
+    cascade commit failure leaves the tier due and the next tick re-walks the
+    same users. For a rollover-capped tier the rows already reduced to carried
+    spend match the under-cap zero statement on retry and are erased: spend 15
+    against a 10 cap becomes 5 on the first tick, then 0 on the second. The
+    window stamp makes the retry a no-op for already-reset rows, so the 5
+    survives until the window actually advances."""
+    _make_counter_invalidation_job(monkeypatch)
+    db = SwitchableCascadeFailureDB()
+    prisma_client = MockPrismaClient()
+    prisma_client.db = db
+    budget = _budget_row(budget_id="budget-roll", budget_duration="1d", max_budget=10.0)
+    prisma_client.data["budget"] = [budget]
+    db.litellm_endusertable.set_find_many_results(
+        [type("EndUser", (), {"spend": 15.0, "user_id": "enduser-roll", "budget_id": "budget-roll"})]
+    )
+    job = ResetBudgetJob(proxy_logging_obj=MockProxyLogging(), prisma_client=prisma_client)
+    window = budget.budget_reset_at
+
+    asyncio.run(job.reset_budget_for_litellm_budget_table())
+
+    assert _batch_writes(prisma_client, "budget") == [], "the failed cascade must not advance the window"
+    tick_1_writes = _batch_writes(prisma_client, "enduser")
+    assert _replay_stamped_spend_writes(tick_1_writes, 15.0, None) == (5.0, window)
+
+    db.fail_cascade = False
+    db.litellm_endusertable.set_find_many_results(
+        [
+            type(
+                "EndUser",
+                (),
+                {"spend": 5.0, "user_id": "enduser-roll", "budget_id": "budget-roll", "budget_reset_at": window},
+            )
+        ]
+    )
+
+    asyncio.run(job.reset_budget_for_litellm_budget_table())
+
+    tick_2_writes = _batch_writes(prisma_client, "enduser")[len(tick_1_writes) :]
+    assert len(tick_2_writes) == 2, "the retry re-queues the zero and decrement statements"
+    assert _replay_spend_writes(tick_2_writes, 5.0) == 0, "without the stamp these statements would erase the carryover"
+    assert _replay_stamped_spend_writes(tick_2_writes, 5.0, window) == (5.0, window)
+    budget_writes = _batch_writes(prisma_client, "budget")
+    assert len(budget_writes) == 1
+    assert budget_writes[0]["data"]["budget_reset_at"] > window
 
 
 def test_budget_cascade_zeroes_everything_when_rollover_disabled(reset_budget_job, mock_prisma_client, monkeypatch):
