@@ -4600,6 +4600,47 @@ async def test_ollama_decisions_resolves_environment_key_and_explicit_connection
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ("ollama", "ollama_chat"))
+@pytest.mark.parametrize("use_async", (True, False), ids=("asystemone", "systemone"))
+async def test_ollama_systemone_model_info_lookup_uses_explicit_api_base(
+    provider: str, use_async: bool, monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
+) -> None:
+    """Regression for #50826: with OLLAMA_API_BASE pointing at another server, the
+    model-info lookup (POST /api/show) must go to the explicit api_base, never to
+    the environment server. The lookup runs before inference and again while the
+    response is priced, so both the inference route and the decoy route are
+    checked after the call returns."""
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("OLLAMA_API_BASE", "http://decoy.local:11434")
+    litellm.get_model_info.cache_clear()
+    real_show: Final = respx_mock.post("http://ollama.local:11434/api/show").respond(
+        json={"template": "", "model_info": {"context_length": 4096}}
+    )
+    decoy_show: Final = respx_mock.post("http://decoy.local:11434/api/show").respond(
+        json={"template": "", "model_info": {}}
+    )
+    route: Final = respx_mock.post("http://ollama.local:11434/v1/systemone").respond(json=_RESPONSE)
+    kwargs: Final = {
+        "model": f"{provider}/d3:4b",
+        "state": "review",
+        "questions": _QUESTIONS,
+        "api_base": "http://ollama.local:11434/v1/",
+        "api_key": "fake-api-key",
+    }
+
+    try:
+        response: Final = await litellm.asystemone(**kwargs) if use_async else litellm.systemone(**kwargs)
+    finally:
+        litellm.get_model_info.cache_clear()
+
+    assert route.called
+    assert response.answers["is_defect"] == NoulAnswer(type="noul", noul=0.9)
+    assert real_show.called
+    assert json.loads(real_show.calls.last.request.content) == {"name": "d3:4b"}
+    assert decoy_show.call_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ("ollama", "ollama_chat"))
 async def test_ollama_decisions_maps_upstream_bad_requests(
     provider: str, monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
 ) -> None:

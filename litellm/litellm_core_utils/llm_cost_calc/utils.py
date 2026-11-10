@@ -1572,6 +1572,7 @@ def generic_cost_per_token(
     model_info: ModelInfo | None = None,
     vertex_location: str | None = None,
     current_time: datetime | None = None,
+    api_base: str | None = None,
 ) -> tuple[float, float]:
     """
     Calculates the cost per token for a given model, prompt tokens, and completion tokens.
@@ -1598,7 +1599,9 @@ def generic_cost_per_token(
     # per-deployment override: those are registered under the deployment id and kept off
     # the shared model-name key, so resolving from the name here reads the public rate.
     resolved_model_info: Final = apply_provider_cache_read_default(
-        get_model_info(model=model, custom_llm_provider=custom_llm_provider) if model_info is None else model_info,
+        get_model_info(model=model, custom_llm_provider=custom_llm_provider, api_base=api_base)
+        if model_info is None
+        else model_info,
         custom_llm_provider,
     )
 
@@ -1937,6 +1940,7 @@ def get_billed_token_rates(
     current_time: datetime | None = None,
     custom_cost_per_token: CostPerToken | None = None,
     model_info: ModelInfo | None = None,
+    api_base: str | None = None,
 ) -> BilledTokenRates | None:
     """Rates the cost calculator bills ``usage`` at, resolved exactly as the totals and the token-type
     breakdown resolve them. None when the model's pricing cannot be resolved."""
@@ -1946,7 +1950,7 @@ def get_billed_token_rates(
         resolved_model_info: Final = apply_provider_cache_read_default(
             model_info
             if model_info is not None
-            else get_model_info(model=model, custom_llm_provider=custom_llm_provider),
+            else get_model_info(model=model, custom_llm_provider=custom_llm_provider, api_base=api_base),
             custom_llm_provider,
         )
     except Exception:  # noqa: BLE001  # get_model_info raises a bare Exception for an unmapped model: no rates
@@ -1972,6 +1976,7 @@ def get_token_type_cost_breakdown(
     current_time: datetime | None = None,
     custom_cost_per_token: CostPerToken | None = None,
     model_info: ModelInfo | None = None,
+    api_base: str | None = None,
 ) -> TokenTypeCostBreakdown:
     """
     Provider-agnostic cost of reasoning and cache tokens, derived from the usage
@@ -1997,6 +2002,7 @@ def get_token_type_cost_breakdown(
         current_time=current_time,
         custom_cost_per_token=custom_cost_per_token,
         model_info=model_info,
+        api_base=api_base,
     )
     if rates is None:
         return TokenTypeCostBreakdown(0.0, 0.0, 0.0)

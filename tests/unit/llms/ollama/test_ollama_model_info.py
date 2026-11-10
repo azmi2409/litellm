@@ -448,6 +448,35 @@ class TestOllamaGetModelInfo:
 
         assert captured_urls[0] == "http://localhost:11434/api/show"
 
+    def test_get_model_info_strips_v1_from_explicit_api_base(self, monkeypatch):
+        """An OpenAI-compatible base ending in /v1/ must resolve to the server base, not /v1/api/show."""
+        from litellm.llms.ollama.completion.transformation import OllamaConfig
+
+        captured_urls = []
+
+        def mock_post(url, json, headers=None):
+            captured_urls.append(url)
+            return DummyResponse({"template": "", "model_info": {}}, status_code=200)
+
+        monkeypatch.setattr("litellm.module_level_client.post", mock_post)
+
+        config = OllamaConfig()
+        config.get_model_info("my-custom-model", api_base="http://my-remote-server:11434/v1/")
+
+        assert captured_urls[0] == "http://my-remote-server:11434/api/show"
+
+    @pytest.mark.parametrize(
+        ("api_base", "expected"),
+        [
+            ("http://real-host:11434/v1/", "http://real-host:11434"),
+            ("http://real-host:11434/v1", "http://real-host:11434"),
+            ("http://real-host:11434", "http://real-host:11434"),
+            ("http://real-host:11434/api/show", "http://real-host:11434"),
+        ],
+    )
+    def test_get_server_api_base_strips_openai_compat_prefix(self, api_base, expected):
+        assert OllamaModelInfo.get_server_api_base(api_base) == expected
+
     def test_get_model_info_graceful_fallback_on_connection_error(self, monkeypatch):
         """When the Ollama server is unreachable, should return defaults instead of raising."""
         from litellm.llms.ollama.completion.transformation import OllamaConfig

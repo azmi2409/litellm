@@ -2180,6 +2180,7 @@ class Logging(LiteLLMLoggingBaseClass):
                     hidden_params["response_cost"],
                     litellm_model_name=litellm_model_name,
                     router_model_id=router_model_id or hidden_params.get("model_id"),
+                    api_base=hidden_params.get("api_base") if isinstance(hidden_params.get("api_base"), str) else None,
                 )
                 return self._recorded_response_cost(hidden_params["response_cost"])
             elif router_model_id is None and "model_id" in hidden_params:  # use model_id if not already set
@@ -2232,6 +2233,12 @@ class Logging(LiteLLMLoggingBaseClass):
                 "router_model_id": router_model_id,
                 "pricing_provider": self.get_router_pricing_provider(),
                 "litellm_logging_obj": self,
+                "api_base": (
+                    result_hidden_params.get("api_base")
+                    if isinstance(result_hidden_params, Mapping)
+                    and isinstance(result_hidden_params.get("api_base"), str)
+                    else None
+                ),
                 "data_residency": (
                     self.litellm_params.get("data_residency")
                     if hasattr(self, "litellm_params") and self.litellm_params
@@ -2281,6 +2288,9 @@ class Logging(LiteLLMLoggingBaseClass):
                 total_response_cost,
                 litellm_model_name=litellm_model_name,
                 router_model_id=router_model_id,
+                api_base=result_hidden_params.get("api_base")
+                if isinstance(result_hidden_params.get("api_base"), str)
+                else None,
             )
             return self._recorded_response_cost(total_response_cost)
         except Exception as e:  # error calculating cost
@@ -2302,6 +2312,9 @@ class Logging(LiteLLMLoggingBaseClass):
                 calculation_failed=True,
                 litellm_model_name=litellm_model_name,
                 router_model_id=router_model_id,
+                api_base=result_hidden_params.get("api_base")
+                if isinstance(result_hidden_params.get("api_base"), str)
+                else None,
             )
 
         return None
@@ -2348,6 +2361,7 @@ class Logging(LiteLLMLoggingBaseClass):
         calculation_failed: bool = False,
         litellm_model_name: str | None = None,
         router_model_id: str | None = None,
+        api_base: str | None = None,
     ) -> None:
         if response_cost is None and not calculation_failed:
             return
@@ -2361,6 +2375,7 @@ class Logging(LiteLLMLoggingBaseClass):
                 calculation_failed=calculation_failed,
                 litellm_model_name=litellm_model_name,
                 router_model_id=router_model_id,
+                api_base=api_base,
             )
         except Exception as e:  # noqa: BLE001  # the pricing helpers raise plain Exception and a diagnostic must never break cost tracking
             verbose_logger.debug("zero_cost_diagnostic skipped: %s", e)
@@ -2379,6 +2394,7 @@ class Logging(LiteLLMLoggingBaseClass):
         calculation_failed: bool,
         litellm_model_name: str | None,
         router_model_id: str | None,
+        api_base: str | None = None,
     ) -> tuple[StandardLoggingZeroCostDiagnostic, str] | None:
         metadata: Final = StandardLoggingPayloadSetup.merge_litellm_metadata(self.litellm_params)
         if response_cost or is_unbilled_non_inference_call(self.call_type, metadata, result):
@@ -2400,6 +2416,7 @@ class Logging(LiteLLMLoggingBaseClass):
                 litellm_params=self.model_call_details.get("litellm_params"),
             ),
             litellm_logging_obj=self,
+            api_base=api_base,
         )
         if pricing is None:
             return None
@@ -3152,7 +3169,11 @@ class Logging(LiteLLMLoggingBaseClass):
             self._add_failed_attempts_spend(get_usage_object(completion_response=logging_result))
         elif "response_cost" in hidden_params:
             self.model_call_details["response_cost"] = hidden_params["response_cost"]
-            self._record_zero_cost_diagnostic(logging_result, hidden_params["response_cost"])
+            self._record_zero_cost_diagnostic(
+                logging_result,
+                hidden_params["response_cost"],
+                api_base=hidden_params.get("api_base") if isinstance(hidden_params.get("api_base"), str) else None,
+            )
             self._add_failed_attempts_spend(get_usage_object(completion_response=logging_result))
         elif (existing_cost := self.model_call_details.get("response_cost")) is not None and (
             existing_cost != 0 or self.call_type == CallTypes.pass_through.value  # pyright: ignore[reportUnknownMemberType]  # Logging.call_type is untyped

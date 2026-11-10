@@ -3438,7 +3438,7 @@ def _supports_provider_info_factory(model: str, custom_llm_provider: str | None,
     return None
 
 
-def supports_factory(model: str, custom_llm_provider: str | None, key: str) -> bool:
+def supports_factory(model: str, custom_llm_provider: str | None, key: str, api_base: str | None = None) -> bool:
     """
     Check if the given model supports function calling and return a boolean value.
 
@@ -3464,7 +3464,9 @@ def supports_factory(model: str, custom_llm_provider: str | None, key: str) -> b
                 model=model, custom_llm_provider=custom_llm_provider
             )
 
-        model_info: Final = get_model_info_helper(model=model, custom_llm_provider=custom_llm_provider)
+        model_info: Final = get_model_info_helper(
+            model=model, custom_llm_provider=custom_llm_provider, api_base=api_base
+        )
 
         if model_info.get(key, False) is True:
             return True
@@ -3589,17 +3591,23 @@ def is_explicitly_disabled_factory(model: str, custom_llm_provider: str | None, 
         return False
 
 
-def supports_audio_input(model: str, custom_llm_provider: str | None = None) -> bool:
+def supports_audio_input(model: str, custom_llm_provider: str | None = None, api_base: str | None = None) -> bool:
     """Check if a given model supports audio input in a chat completion call"""
-    return supports_factory(model=model, custom_llm_provider=custom_llm_provider, key="supports_audio_input")
+    return supports_factory(
+        model=model, custom_llm_provider=custom_llm_provider, key="supports_audio_input", api_base=api_base
+    )
 
 
-def supports_video_input(model: str, custom_llm_provider: str | None = None) -> bool:
-    return supports_factory(model=model, custom_llm_provider=custom_llm_provider, key="supports_video_input")
+def supports_video_input(model: str, custom_llm_provider: str | None = None, api_base: str | None = None) -> bool:
+    return supports_factory(
+        model=model, custom_llm_provider=custom_llm_provider, key="supports_video_input", api_base=api_base
+    )
 
 
-def supports_box_questions(model: str, custom_llm_provider: str | None = None) -> bool:
-    return supports_factory(model=model, custom_llm_provider=custom_llm_provider, key="supports_box_questions")
+def supports_box_questions(model: str, custom_llm_provider: str | None = None, api_base: str | None = None) -> bool:
+    return supports_factory(
+        model=model, custom_llm_provider=custom_llm_provider, key="supports_box_questions", api_base=api_base
+    )
 
 
 def supports_pdf_input(model: str, custom_llm_provider: str | None = None) -> bool:

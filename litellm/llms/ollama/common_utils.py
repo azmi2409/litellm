@@ -139,7 +139,7 @@ class OllamaModelInfo(BaseLLMModelInfo):
 
     @classmethod
     def get_server_api_base(cls, api_base: str | None = None) -> str:
-        api_base = cls.get_api_base(api_base).rstrip("/")
+        api_base = cls.get_api_base(api_base).rstrip("/").removesuffix("/v1")
         for suffix in (
             "/api/generate",
             "/api/chat",
